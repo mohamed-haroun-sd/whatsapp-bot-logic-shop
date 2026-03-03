@@ -1,7 +1,9 @@
-import makeWASocket, { useMultiFileAuthState, MessageType, proto } from "@whiskeysockets/baileys";
+import makeWASocket, { useMultiFileAuthState, disconnectReason, fetchLatestBaileysVersion } from "@whiskeysockets/baileys";
 import fs from "fs";
 import OpenAI from "openai";
+import { Boom } from "@hapi/boom";
 
+// إعداد OpenAI
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
 });
@@ -9,87 +11,88 @@ const openai = new OpenAI({
 const getAiResponse = async (prompt) => {
     try {
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini", // استخدام gpt-4o-mini لأنه متاح في البيئة
+            model: "gpt-4o-mini",
             messages: [{
+                role: "system",
+                content: "أنت مساعد ذكي ولطيف، ترد باللغة العربية بأسلوب مهذب ومختصر."
+            }, {
                 role: "user",
                 content: prompt
             }],
         });
         return completion.choices[0].message.content;
     } catch (error) {
-        console.error("Error getting AI response:", error);
-        return "عذراً، حدث خطأ أثناء معالجة طلبك بواسطة الذكاء الاصطناعي.";
+        console.error("Error with OpenAI:", error);
+        return "عذراً، واجهت مشكلة في التفكير حالياً. جرب لاحقاً!";
     }
 };
 
 const startBot = async () => {
     const { state, saveCreds } = await useMultiFileAuthState("auth");
+    const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
+        version,
         auth: state,
-        printQRInTerminal: true
+        printQRInTerminal: true,
+        browser: ["Manus Bot", "Chrome", "1.0.0"]
     });
 
     sock.ev.on("creds.update", saveCreds);
 
-    // Set to store JIDs of users who have received a welcome message
+    sock.ev.on("connection.update", (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === "close") {
+            const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== disconnectReason.loggedOut;
+            console.log("Connection closed, reconnecting...", shouldReconnect);
+            if (shouldReconnect) startBot();
+        } else if (connection === "open") {
+            console.log("Bot connected successfully!");
+        }
+    });
+
     const welcomedUsers = new Set();
 
     sock.ev.on("messages.upsert", async m => {
-        if (!m.messages) return;
+        if (!m.messages || m.type !== "notify") return;
         const msg = m.messages[0];
-        if (!msg.message) return;
+        if (!msg.message || msg.key.fromMe) return;
 
         const sender = msg.key.remoteJid;
-        const messageText = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        const messageText = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim().toLowerCase();
 
-        // Welcome message logic
-        if (!welcomedUsers.has(sender) && !msg.key.fromMe) {
-            await sock.sendMessage(sender, { text: "مرحباً بك! أنا بوت واتساب الخاص بك. كيف يمكنني مساعدتك اليوم؟" });
+        // ترحيب تلقائي
+        if (!welcomedUsers.has(sender)) {
+            await sock.sendMessage(sender, { text: "مرحباً بك! 👋 أنا بوت واتساب الذكي.\n\nأرسل كلمة *قائمة* لعرض الخيارات المتاحة، أو اسألني أي سؤال وسأجيبك باستخدام الذكاء الاصطناعي!" });
             welcomedUsers.add(sender);
+            return;
         }
 
-        if (messageText === "زر") {
-            await sock.sendMessage(sender, { text: "لقد ضغطت على الزر!" });
-        }
-
+        // معالجة الأوامر
         if (messageText === "قائمة") {
-            await sock.sendMessage(sender, {
-                text: "اختر من القائمة الرئيسية:",
-                buttons: [
-                    { buttonId: "hours", buttonText: { displayText: "ساعات العمل" }, type: 1 },
-                    { buttonId: "location", buttonText: { displayText: "موقعنا" }, type: 1 },
-                    { buttonId: "support", buttonText: { displayText: "تواصل مع الدعم" }, type: 1 },
-                    { buttonId: "ai_chat", buttonText: { displayText: "تحدث مع الذكاء الاصطناعي" }, type: 1 }
-                ],
-                headerType: 1
-            });
+            const menuText = `*القائمة الرئيسية* 📋\n\n` +
+                `1️⃣ *ساعات العمل*\n` +
+                `2️⃣ *موقعنا*\n` +
+                `3️⃣ *تواصل مع الدعم*\n` +
+                `4️⃣ *عن البوت*\n\n` +
+                `يرجى كتابة رقم الخيار أو اسمه (مثلاً: 1 أو ساعات العمل)`;
+            await sock.sendMessage(sender, { text: menuText });
+            return;
         }
 
-        // Handle button responses
-        if (msg.message.buttonsResponseMessage) {
-            const buttonId = msg.message.buttonsResponseMessage.selectedButtonId;
-            switch (buttonId) {
-                case "hours":
-                    await sock.sendMessage(sender, { text: "ساعات العمل: من الأحد إلى الخميس، من 9 صباحاً حتى 5 مساءً." });
-                    break;
-                case "location":
-                    await sock.sendMessage(sender, { text: "يمكنك العثور علينا هنا: [رابط خرائط جوجل](https://maps.app.goo.gl/your_location)" });
-                    break;
-                case "support":
-                    await sock.sendMessage(sender, { text: "للتواصل مع الدعم الفني، يرجى الاتصال على: +123456789 أو إرسال بريد إلكتروني إلى support@example.com" });
-                    break;
-                case "ai_chat":
-                    await sock.sendMessage(sender, { text: "أهلاً بك في وضع الدردشة مع الذكاء الاصطناعي. اسألني أي شيء!" });
-                    break;
-                default:
-                    await sock.sendMessage(sender, { text: "خيار غير صالح. يرجى الاختيار من القائمة." });
-                    break;
-            }
-        }
-
-        // AI response for unhandled messages
-        if (!msg.key.fromMe && !msg.message.buttonsResponseMessage && messageText !== "زر" && messageText !== "قائمة" && messageText !== "") {
+        // ردود القائمة
+        if (messageText === "1" || messageText.includes("ساعات العمل")) {
+            await sock.sendMessage(sender, { text: "🕒 *ساعات العمل:*\nمن الأحد إلى الخميس، من 9 صباحاً حتى 5 مساءً." });
+        } else if (messageText === "2" || messageText.includes("موقعنا")) {
+            await sock.sendMessage(sender, { text: "📍 *موقعنا:*\nيمكنك زيارتنا في فرعنا الرئيسي أو عبر الخريطة: [رابط الخريطة]" });
+        } else if (messageText === "3" || messageText.includes("الدعم")) {
+            await sock.sendMessage(sender, { text: "📞 *الدعم الفني:*\nتواصل معنا عبر الواتساب على هذا الرقم أو عبر البريد: support@example.com" });
+        } else if (messageText === "4" || messageText.includes("عن البوت")) {
+            await sock.sendMessage(sender, { text: "🤖 أنا بوت واتساب مطور بواسطة Manus AI، أعمل بالذكاء الاصطناعي لخدمتكم!" });
+        } else if (messageText === "زر") {
+            await sock.sendMessage(sender, { text: "✅ تم استقبال أمر الزر بنجاح!" });
+        } else {
+            // إذا لم يكن أمراً، استخدم الذكاء الاصطناعي
             const aiResponse = await getAiResponse(messageText);
             await sock.sendMessage(sender, { text: aiResponse });
         }
