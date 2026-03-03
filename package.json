@@ -6,7 +6,8 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc.9"
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "openai": "^4.0.0"
   },
   "type": "module"
 }
